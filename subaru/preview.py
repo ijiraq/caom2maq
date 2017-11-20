@@ -4,8 +4,48 @@ from PIL import Image
 from tempfile import NamedTemporaryFile
 import logging
 from astropy.time import Time
+import cadcdata
 
 endpoint = "http://smoka.nao.ac.jp/thumbnail"
+data_client = cadcdata.CadcDataClient()
+
+
+def get_suprimecam_mosaic_preview(date="2002-05-07", frame_id="SUPA0010598X"):
+    """
+    Retrieve a PNG mosiac preview from the SMOKA site
+    :param date:
+    :param frame_id:
+    :return:
+    """
+    endpoint = "http://smoka.nao.ac.jp/qlis/ImagePNG"
+
+    frame_id = frame_id.replace("X", "0")
+    params = {'frameid': frame_id,
+              'dateobs': date,
+              'grayscale': 'linear',
+              'mosaic': 'true'}
+
+    fobj = NamedTemporaryFile()
+    fobj.write(requests.get(endpoint, params=params).content)
+    fobj.seek(0)
+    preview = Image.open(fobj.name)
+    preview = preview.rotate(90, expand=True)
+    fobj.close()
+
+    expid = frame_id.replace("SUPA", "SUPE")
+
+    preview_filename = "{}_preview.png".format(expid)
+    preview.save(preview_filename)
+    data_client.put_file('subaru', preview_filename)
+    sys.unlink(preview_filename)
+
+    thumbnail_filename = "{}_thumbnail.png".format(expid)
+    preview.thumbnail((256, 256))
+    preview.save(thumbnail_filename)
+    data_client.put_file('subaru', thumbnail_filename)
+    sys.unlink(thumbnail_filename)
+
+    return {'preview': preview_filename, 'thumbnail': thumbnail_filename}
 
 
 def build_suprimecam_peviews(date="2002-05-07", frame_id="SUPA0010598X", instrument="SUP"):
@@ -17,8 +57,7 @@ def build_suprimecam_peviews(date="2002-05-07", frame_id="SUPA0010598X", instrum
     :param instrument:
     :return:
     """
-    #endpoint = ""
-    #http: // smoka.nao.ac.jp / qlis / ImagePNG?frameid = SUPA00105980 & dateobs = 2002 - 05 - 07 & grayscale = log & mosaic = true
+
     ham_transition_date = Time('2008-08-01')
     frame = frame_id.rstrip("X")
 
@@ -54,3 +93,4 @@ def build_suprimecam_peviews(date="2002-05-07", frame_id="SUPA0010598X", instrum
 if __name__ == '__main__':
     import sys
     build_suprimecam_peviews(sys.argv[1], sys.argv[2])
+    get_suprimecam_mosaic_preview(sys.argv[1], sys.argv[2])
