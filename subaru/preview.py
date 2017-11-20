@@ -5,9 +5,9 @@ from tempfile import NamedTemporaryFile
 import logging
 from astropy.time import Time
 import cadcdata
+from cadcutils import net
 
 endpoint = "http://smoka.nao.ac.jp/thumbnail"
-data_client = cadcdata.CadcDataClient()
 
 
 def get_suprimecam_mosaic_preview(date="2002-05-07", frame_id="SUPA0010598X"):
@@ -36,14 +36,10 @@ def get_suprimecam_mosaic_preview(date="2002-05-07", frame_id="SUPA0010598X"):
 
     preview_filename = "{}_preview.png".format(expid)
     preview.save(preview_filename)
-    data_client.put_file('subaru', preview_filename)
-    sys.unlink(preview_filename)
 
     thumbnail_filename = "{}_thumbnail.png".format(expid)
     preview.thumbnail((256, 256))
     preview.save(thumbnail_filename)
-    data_client.put_file('subaru', thumbnail_filename)
-    sys.unlink(thumbnail_filename)
 
     return {'preview': preview_filename, 'thumbnail': thumbnail_filename}
 
@@ -92,5 +88,10 @@ def build_suprimecam_peviews(date="2002-05-07", frame_id="SUPA0010598X", instrum
 
 if __name__ == '__main__':
     import sys
-    build_suprimecam_peviews(sys.argv[1], sys.argv[2])
-    get_suprimecam_mosaic_preview(sys.argv[1], sys.argv[2])
+    data_client = cadcdata.CadcDataClient(net.Subject())
+
+    # Don't call our custom preview builder any more :-(
+    # build_suprimecam_peviews(sys.argv[1], sys.argv[2])
+
+    for filename in get_suprimecam_mosaic_preview(sys.argv[1], sys.argv[2]).keys():
+        data_client.put_file('subaru', filename)
