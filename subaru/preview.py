@@ -10,9 +10,11 @@ from cadcutils import net
 endpoint = "http://smoka.nao.ac.jp/thumbnail"
 
 
-def get_suprimecam_mosaic_preview(date="2002-05-07", frame_id="SUPA0010598X"):
+def get_suprimecam_mosaic_preview(frame_id="SUPA0010598X"):
     """
     Retrieve a PNG mosiac preview from the SMOKA site
+
+    This subroutine is an example of how we can retrieve the MOSAIC previews provided by SMOKA.
     :param date:
     :param frame_id:
     :return:
@@ -21,7 +23,6 @@ def get_suprimecam_mosaic_preview(date="2002-05-07", frame_id="SUPA0010598X"):
 
     frame_id = frame_id.replace("X", "0")
     params = {'frameid': frame_id,
-              'dateobs': date,
               'grayscale': 'linear',
               'mosaic': 'true'}
 
@@ -94,4 +95,5 @@ if __name__ == '__main__':
     # build_suprimecam_peviews(sys.argv[1], sys.argv[2])
 
     for filename in get_suprimecam_mosaic_preview(sys.argv[1], sys.argv[2]).keys():
-        data_client.put_file('subaru', filename)
+        if False:
+            data_client.put_file('subaru', filename)
