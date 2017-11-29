@@ -233,15 +233,15 @@ def build_observation(smoka_meta_data_row, instrument_name='SUP'):
     cwl = (filter_info['wavelength_min']+filter_info['wavelength_max'])/2.0
     bandwidth = (filter_info['wavelength_max']-filter_info['wavelength_min'])
     energy = Energy()
-    energy.bounds = Interval(filter_info['wavelength_min'].to('nm').value,
-                             filter_info['wavelength_max'].to('nm').value,
-                             samples=[shape.SubInterval(filter_info['wavelength_min'].to('nm').value,
-                                                        filter_info['wavelength_max'].to('nm').value)])
+    energy.bounds = Interval(filter_info['wavelength_min'].to('m').value,
+                             filter_info['wavelength_max'].to('m').value,
+                             samples=[shape.SubInterval(filter_info['wavelength_min'].to('m').value,
+                                                        filter_info['wavelength_max'].to('m').value)])
     energy.bandpass_name = u'{}'.format(filter_info['bandpass_name'])
     energy.dimension = 1
     energy.em_band = EnergyBand.OPTICAL
     energy.resolving_power = float(cwl/bandwidth)
-    energy.sample_size = bandwidth.to('nm').value
+    energy.sample_size = bandwidth.to('m').value
 
     this_plane.energy = energy
 
