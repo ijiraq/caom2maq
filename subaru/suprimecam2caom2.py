@@ -9,14 +9,17 @@ from astropy.io import ascii
 import svo
 import requests
 import logging
+import os
 from tempfile import NamedTemporaryFile
-
 from caom2repo import CAOM2RepoClient
+
+DATADIR = __PATH__ = os.path.join(os.path.dirname(__file__), 'data')
+SUP_HEADER = os.path.join(DATADIR, "SUP_Header.txt")
 
 INSTRUMENT_NICK_NAMES = ('MIR', 'HSC', 'CIA', 'FCS', 'HDS', 'MCS', 'FMS', 'K3D',
                          'HIC', 'SUP', 'CAC', 'IRC', 'COM', 'OHS')
 SMOKA_OBSLOG_ENDPOINT = 'http://smoka.nao.ac.jp/status/obslog'
-TELESCOPE_NAME = {"SUP": 'Subaru'}
+TELESCOPE_NAME = {"SUP": 'SUBARU'}
 INSTRUMENT_NAMES = {"MIR": ("MOICS", "Multi-Object Infrared Camera and Spectrograph"),
                     'HSC': ("HSC", "Hyper Suprime-Cam"),
                     "CIA": ("CIAO", "Coronagraphic Imager"),
@@ -53,11 +56,35 @@ def get_metadata_table(instrument_name="SUP", year=2002):
     resp.raise_for_status()
     local_filename.write(resp.content)
     local_filename.seek(0)
-    return ascii.read(local_filename.name,
-                      format='fixed_width_no_header',
-                      delimiter=" ",
-                      fill_values=('', '----', '---'),
-                      names=open(local_filename.name).readline()[1:].split())
+    return parse_meta_data_table(local_filename.name)
+
+def parse_meta_data_table(local_filename):
+    """
+    Use the astropy package to return a Table representation of a SMOKA observation record.
+
+    :param local_filename: name of text file with SMOKA observations in a text file.
+    :type local_filename: str
+    :return: Observation Record
+    :rtype: Table
+    """
+    position_line = open(SUP_HEADER).readlines()[1].split(' ')
+    col_ends = []
+    col_starts = [0]
+    for col in position_line:
+        if col:
+            col_ends.append(col_starts[-1] + len(col))
+            col_starts.append(col_ends[-1] + 1)
+        else:
+            col_starts[-1] += 1
+    col_starts = col_starts[:-1]
+
+    colnames = open(local_filename).readline()[1:].split()
+    return ascii.read(local_filename,
+                      format="fixed_width_no_header",
+                      col_ends=col_ends,
+                      col_starts=col_starts,
+                      names=colnames,
+                      fill_values=('', '----', '---'))
 
 
 def position_bounds(ra, dec, width=34 / 60.0, height=27 / 60.0):
@@ -135,7 +162,7 @@ def build_observation(smoka_meta_data_row, instrument_name='SUP'):
     this_instrument = Instrument(name=INSTRUMENT_NAMES[instrument_name][1])
     this_instrument.keywords.add(str(row['OBS_MOD']))
 
-    obstype = u'{}'.format(row['DATA_TYP']).upper()
+    obstype = u'{}'.format(row['DATA_TYP'].upper())
     target_name = u'{}'.format(row['OBJECT2']).upper()
     if obstype == u'OBJECT':
         intent = ObservationIntentType.SCIENCE
@@ -143,6 +170,7 @@ def build_observation(smoka_meta_data_row, instrument_name='SUP'):
         intent = ObservationIntentType.CALIBRATION
 
     observation_id = u'{}'.format(row['FRAME_ID'].replace("A", "E").replace("X", "0"))
+    logging.info("Creating CAOM2 observation: {}".format(observation_id))
 
     this_observation = SimpleObservation(collection=this_telescope.name,
                                          observation_id=observation_id,
@@ -158,7 +186,7 @@ def build_observation(smoka_meta_data_row, instrument_name='SUP'):
                                          )
 
     # Create a plane that will hold the raw data
-    this_plane = Plane(u"{}".format(row['FRAME_ID'].replace("X", "0")))
+    this_plane = Plane(u"{}".format(row['FRAME_ID'].replace("X", "0")), meta_release=time.Time('2017-01-01 00:00:00').to_datetime())
     this_plane.calibration_level = CalibrationLevel.RAW_STANDARD
     this_plane.data_product_type = DataProductType.IMAGE
     this_plane.provenance = Provenance(name='SMOKA',
@@ -243,16 +271,18 @@ def caom2repo(this_observation, resource_id='ivo://cadc.nrc.ca/sc2repo'):
     :return:
     """
 
-    repo_client = CAOM2RepoClient(net.Subject(), resource_id=resource_id)
+    certificate = os.path.join(os.getenv('HOME'), '.ssl/cadcproxy.pem')
+
+    repo_client = CAOM2RepoClient(net.Subject(certificate=certificate), resource_id=resource_id)
 
     try:
-        logging.info('Creating observation {}'.format(this_observation.observation_id))
+        logging.info('Inserting observation {}'.format(this_observation.observation_id))
         repo_client.put_observation(this_observation)
     except Exception as ex:
-        logging.error(str(ex))
-        logging.info('Updating observation {}'.format(this_observation.observation_id))
         logging.warning(str(ex))
+        logging.info('Deleting observation {}'.format(this_observation.observation_id))
         repo_client.delete_observation(this_observation.collection, this_observation.observation_id)
+        logging.info('Inserting observation {}'.format(this_observation.observation_id))
         repo_client.put_observation(this_observation)
 
 
@@ -263,7 +293,6 @@ def main(instrument_name='SUP', year='2002'):
 
     for row in observation_table:
         caom2repo(build_observation(row, instrument_name=instrument_name))
-        break
 
 
 if __name__ == '__main__':
