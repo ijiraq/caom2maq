@@ -35,7 +35,12 @@ INSTRUMENT_NAMES = {"MIR": ("MOICS", "Multi-Object Infrared Camera and Spectrogr
                     "IRC": "Infrared Camera and Spectrograph",
                     "OHS": "Cooled Infrared Spectrograph and Camera for OHS",
                     }
-PIXEL_SCALE = {"SUP": 0.2*units.arcsecond}
+PIXEL_SCALE = {"SUP": 0.2 * units.arcsecond}
+
+# Create a CAOM2RepoClient object.
+certificate = os.path.join(os.getenv('HOME'), '.ssl/cadcproxy.pem')
+resource_id = 'ivo://cadc.nrc.ca/sc2repo'
+repo_client = CAOM2RepoClient(net.Subject(certificate=certificate), resource_id=resource_id)
 
 
 def get_metadata_table(instrument_name="SUP", year=2002):
@@ -49,14 +54,18 @@ def get_metadata_table(instrument_name="SUP", year=2002):
     :rtype: Table
     :return: table of metadata values
     """
+    local_filename = "{}_{}.txt".format(instrument_name, year)
+    if not os.access(local_filename, os.R_OK ):
+        smoka_obslog = "{}/".format(SMOKA_OBSLOG_ENDPOINT, local_filename)
+        name_temp_file = NamedTemporaryFile()
+        local_filename = str(name_temp_file.name)
+        with open(local_filename, str('w')) as fobj:
+            resp = requests.get(smoka_obslog)
+            resp.raise_for_status()
+            fobj.write(resp.content)
+        name_temp_file.seek(0)
+    return parse_meta_data_table(local_filename)
 
-    smoka_obslog = "{}/{}_{}.txt".format(SMOKA_OBSLOG_ENDPOINT, instrument_name, year)
-    local_filename = NamedTemporaryFile()
-    resp = requests.get(smoka_obslog)
-    resp.raise_for_status()
-    local_filename.write(resp.content)
-    local_filename.seek(0)
-    return parse_meta_data_table(local_filename.name)
 
 def parse_meta_data_table(local_filename):
     """
@@ -141,6 +150,46 @@ def smoka_datarequest(frame_ids):
     return requests.post(endpoint, data=data).content
 
 
+def build_energy(row, bandpass_database):
+    """
+    given a row of data from SMOKA build a CAOM2 Energy object.
+
+    :param row:  SMOKA text file Row
+    :return: CAOM2.Energy
+    :rtype: Energy
+    """
+
+    raw_filter_name = row['FILTER']
+
+    # Build the energy object
+    energy = Energy()
+    try:
+        filter_name = row['FILTER'].split('-')[-1]
+        if filter_name[-1] == "+":
+            filter_name = "SDSS_{}".format(filter_name[0])
+        if filter_name[0] == 'L':
+            filter_name = "NB{}".format(filter_name[1:])
+
+        filter_info = bandpass_database[filter_name]
+
+        cwl = (filter_info['wavelength_min'] + filter_info['wavelength_max']) / 2.0
+        bandwidth = (filter_info['wavelength_max'] - filter_info['wavelength_min'])
+        energy.bounds = Interval(filter_info['wavelength_min'].to('m').value,
+                                 filter_info['wavelength_max'].to('m').value,
+                                 samples=[shape.SubInterval(filter_info['wavelength_min'].to('m').value,
+                                                            filter_info['wavelength_max'].to('m').value)])
+        energy.resolving_power = float(cwl / bandwidth)
+        energy.sample_size = bandwidth.to('m').value
+    except:
+        pass
+
+    energy.em_band = EnergyBand.OPTICAL
+    energy.bandpass_name = u'{}'.format(raw_filter_name)
+    energy.dimension = 1
+
+    return energy
+
+
 def build_observation(smoka_meta_data_row, instrument_name='SUP'):
     """
     Build a CAOM2 observation record based on the meta data from SMOKA.
@@ -186,7 +235,8 @@ def build_observation(smoka_meta_data_row, instrument_name='SUP'):
                                          )
 
     # Create a plane that will hold the raw data
-    this_plane = Plane(u"{}".format(row['FRAME_ID'].replace("X", "0")), meta_release=time.Time('2017-01-01 00:00:00').to_datetime())
+    this_plane = Plane(u"{}".format(row['FRAME_ID'].replace("X", "0")),
+                       meta_release=time.Time('2017-01-01 00:00:00').to_datetime())
     this_plane.calibration_level = CalibrationLevel.RAW_STANDARD
     this_plane.data_product_type = DataProductType.IMAGE
     this_plane.provenance = Provenance(name='SMOKA',
@@ -197,51 +247,45 @@ def build_observation(smoka_meta_data_row, instrument_name='SUP'):
                                        ))
 
     # Build the time object.
-    start_time = time.Time("{} {}".format(row['DATE_OBS'], row['UT_STR']))
-    exptime = row['EXPTIME'] * units.second
-    end_time = time.Time(start_time + exptime)
-    time_bounds = Interval(start_time.mjd,
-                           end_time.mjd,
-                           samples=[shape.SubInterval(start_time.mjd, end_time.mjd)])
-    this_plane.time = Time(bounds=time_bounds,
-                           dimension=1,
-                           resolution=exptime.to('second').value,
-                           sample_size=exptime.to('day').value,
-                           exposure=exptime.to('second').value
-                           )
+    this_time = None
+    try:
+        start_time = time.Time("{} {}".format(row['DATE_OBS'], row['UT_STR']))
+        exptime = row['EXPTIME'] * units.second
+        end_time = time.Time(start_time + exptime)
+        time_bounds = Interval(start_time.mjd,
+                               end_time.mjd,
+                               samples=[shape.SubInterval(start_time.mjd, end_time.mjd)])
+        this_time = Time(bounds=time_bounds,
+                    dimension=1,
+                    resolution=exptime.to('second').value,
+                    sample_size=exptime.to('day').value,
+                    exposure=exptime.to('second').value
+                    )
+    except Exception as ex:
+        logging.error("Error building Time for {}".format(observation_id))
+        logging.error("{}".format(ex))
+
+    this_plane.time = this_time
 
     # Build the position object.
+    position = None
     try:
         coord = SkyCoord(row['RA2000'], row['DEC2000'], unit=('hour', 'degree'))
         position = Position(bounds=position_bounds(coord.ra.degree, coord.dec.degree),
                             sample_size=PIXEL_SCALE[instrument_name].to('arcsecond').value,
                             time_dependent=False)
     except Exception as ex:
+        logging.error("Error building Position for {}".format(observation_id))
         logging.error("{}".format(ex))
-        position = None
+
     this_plane.position = position
 
-    # Build the energy object
-    filter_name = row['FILTER'].split('-')[-1]
-    if filter_name[-1] == "+":
-        filter_name = "SDSS_{}".format(filter_name[0])
-    if filter_name[0] == 'L':
-        filter_name = "NB{}".format(filter_name[1:])
-
-    filter_info = bandpass_database[filter_name]
-
-    cwl = (filter_info['wavelength_min']+filter_info['wavelength_max'])/2.0
-    bandwidth = (filter_info['wavelength_max']-filter_info['wavelength_min'])
-    energy = Energy()
-    energy.bounds = Interval(filter_info['wavelength_min'].to('m').value,
-                             filter_info['wavelength_max'].to('m').value,
-                             samples=[shape.SubInterval(filter_info['wavelength_min'].to('m').value,
-                                                        filter_info['wavelength_max'].to('m').value)])
-    energy.bandpass_name = u'{}'.format(filter_info['bandpass_name'])
-    energy.dimension = 1
-    energy.em_band = EnergyBand.OPTICAL
-    energy.resolving_power = float(cwl/bandwidth)
-    energy.sample_size = bandwidth.to('m').value
+    energy = None
+    try:
+        energy = build_energy(row, bandpass_database)
+    except Exception as ex:
+        logging.error("Error building Energy for {}".format(observation_id))
+        logging.error("{}".format(ex))
 
     this_plane.energy = energy
 
@@ -262,18 +306,13 @@ def build_observation(smoka_meta_data_row, instrument_name='SUP'):
     return this_observation
 
 
-def caom2repo(this_observation, resource_id='ivo://cadc.nrc.ca/sc2repo'):
+def caom2repo(this_observation):
     """
     Put an observation into the CAOM repo service
 
     :param this_observation: the CAOM2 Python object to store to caom2repo service
-    :param resource_id: the caom2 service to put records to
     :return:
     """
-
-    certificate = os.path.join(os.getenv('HOME'), '.ssl/cadcproxy.pem')
-
-    repo_client = CAOM2RepoClient(net.Subject(certificate=certificate), resource_id=resource_id)
 
     try:
         logging.info('Inserting observation {}'.format(this_observation.observation_id))
@@ -287,19 +326,23 @@ def caom2repo(this_observation, resource_id='ivo://cadc.nrc.ca/sc2repo'):
 
 
 def main(instrument_name='SUP', year='2002'):
-
     observation_table = get_metadata_table(instrument_name=instrument_name,
                                            year=year)
 
     for row in observation_table:
-        caom2repo(build_observation(row, instrument_name=instrument_name))
+        try:
+            caom2repo(build_observation(row, instrument_name=instrument_name))
+        except Exception as ex:
+            logging.error("Failed to build repo record for row: {}".format(row))
+            logging.error(str(ex))
+
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Retrieves metadata table from SMOKA and creates CAOM2 entries")
     parser.add_argument('instrument', choices=INSTRUMENT_NAMES.keys(),
                         help="Short name of SMOKA instrument archive to process.")
-    parser.add_argument('year', choices=range(2002, 2018), type=int, help="Year of observation set to load.")
+    parser.add_argument('year', choices=range(1998, 2018), type=int, help="Year of observation set to load.")
     parser.add_argument('--verbose', action='store_true')
     parser.add_argument('--debug', action='store_true')
     args = parser.parse_args()
