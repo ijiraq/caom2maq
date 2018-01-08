@@ -11,7 +11,6 @@ import requests
 
 DATADIR = __PATH__ = os.path.join(os.path.dirname(__file__), 'data')
 
-
 class BandpassFilterDatabase(dict):
     """
     A database of filter information.
@@ -108,3 +107,17 @@ class BandpassFilterDatabase(dict):
                   'wavelength_min': wavelength_min.value * wavelength_min.unit,
                   'bandpass_name': table.get_field_by_id('filterID').value}
         return values
+
+    def add_static_filter(self, filter_name, bounds):
+        """
+        Add a description of a filter to the database.
+
+        :param filter_name: Name of the filter to be used
+        :param bounds: A trouble with the lowerer and upper energy bouds
+        :type bounds: (Quantity, Quantity)
+        :return: None
+        """
+        self._filter_cache[k] = {'wavelength_min': bounds[0],
+                                 'wavelength_max': bounds[1],
+                                 'bandpasss_name': filter_name}
+
