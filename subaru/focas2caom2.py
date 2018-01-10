@@ -1,5 +1,7 @@
 from __future__ import unicode_literals
 import argparse
+
+import re
 from astropy.coordinates import SkyCoord
 from cadcutils import net
 from caom2 import *
@@ -23,7 +25,7 @@ TELESCOPE_NAME = {"SUP": 'SUBARU',
 INSTRUMENT_NAMES = {"MIR": ("MOICS", "Multi-Object Infrared Camera and Spectrograph"),
                     'HSC': ("HSC", "Hyper Suprime-Cam"),
                     "CIA": ("CIAO", "Coronagraphic Imager"),
-                    "FCS": ("FOCUS", "Faint Object Camera And Spectrograph"),
+                    "FCS": ("FOCAS", "Faint Object Camera And Spectrograph"),
                     "HDS": ("HDS", "High Dispersion Spectrograph"),
                     "MCS": ("MOIRCS", "Multi-Object Infrared Camera and Spectrograph"),
                     "FMS": ("FMOS", "Fiber Multi Object Spectrograph"),
@@ -35,10 +37,56 @@ INSTRUMENT_NAMES = {"MIR": ("MOICS", "Multi-Object Infrared Camera and Spectrogr
                     "IRC": "Infrared Camera and Spectrograph",
                     "OHS": "Cooled Infrared Spectrograph and Camera for OHS",
                     }
+
+DISPERSERS = {"75": {"SY47": (4700, 9100, 250),
+                     "SO58": (5800, 10000, 250),
+                     "DEFAULT": (3000, 11000, 250)},
+              "150": {"L550": (3400, 5500, 700),
+                      "SO58": (5800, 10000, 500),
+                      "SY47": (4700, 9100, 500),
+                      "DEFAULT": (3000, 11000, 600)},
+              "300B": {"SY47":	(4700, 9100, 1000),
+                       "L600":	(3700, 6000, 1000),
+                       "DEFAULT": (3000, 11000, 1000)},
+              "300R": {"SY47":	(4900, 9100, 1000),
+                       "SO58":  (5800, 10000, 1000),
+                       "L600":	(3700, 5950, 2000),
+                       "L550": (3400, 5250, 2000),
+                       "DEFAULT": (3000, 11000, 1500)},
+              "Echelle": {"I":	(7300, 8700, 2500),
+                          "z":	(8300, 10000, 2500),
+                          "DEFAULT": (3000, 11000, 2500)},
+              "VPH450": {"NONE": (3800, 5250, 3000)},
+              "VPH520": {"NONE": (4450, 6050, 3000)},
+              "VPH650": {"SY47": (5300, 7700, 2500),
+                         "DEFAULT": (3000, 11000, 2500)},
+              "VPH850": {"SO58": (5800, 10350, 1500),
+                         "DEFAULT": (3000, 11000, 2500)},
+              "VPH900": {"SO58": (7500, 10450, 3000),
+                         "DEFAULT": (3000, 11000, 2500)},
+              "VPH680": {"SY47": (6450, 7350, 7500),
+                         "DEFAULT": (3000, 11000, 2500)},
+              "VPH800": {"SY47": (7500, 8600, 7000),
+                         "DEFAULT": (3000, 11000, 2500)},
+              "VPH950": {"O58":	(8850, 10000, 5500),
+                         "DEFAULT": (3000, 11000, 2500)}
+              }
+
+_GRISM_NAMES = (
+    ("SCFCGREL01", "SCFCGRLD01", "SCFCGRMB01", "SCFCGRMR01", "SCFCGRHDEC", "SCFCGRHD45", "SCFCGRHD52", "SCFCGRHD65",
+     "SCFCGRHD68", "SCFCGRHD80", "SCFCGRHD95"),
+    ("75", "150", "300B", "300R", "Echelle", "VPH450", "VPH520", "VPH650", "VPH680", "VPH800", "VPH950")
+)
+
+GRISM_NAMES = {}
+for idx in range(len(_GRISM_NAMES[0])):
+    GRISM_NAMES[_GRISM_NAMES[0][idx]] = _GRISM_NAMES[1][idx]
+
+
 PIXEL_SCALE = {"SUP": 0.2 * units.arcsecond,
                "FCS": 0.1038 * units.arcsecond}
-FOV = dict(FCS = (6/60/2.0, 6/60/6.0),
-           SUP = (34/60.0, 27/60.0))
+FOV = dict(FCS=(6/60./2.0, 6/60./2.0),
+           SUP=(34/60.0, 27/60.0))
 
 FILTER_MAP = dict(SCFCFLBU01='U',
                   SCFCFLBB01='B',
@@ -77,12 +125,14 @@ def get_metadata_table(instrument_name="SUP", year=2002):
     :rtype: Table
     :return: table of metadata values
     """
+    logging.info("Building metadata table for : {} {}".format(instrument_name, year))
     local_filename = "{}_{}.txt".format(instrument_name, year)
-    if not os.access(local_filename, os.R_OK ):
-        smoka_obslog = "{}/".format(SMOKA_OBSLOG_ENDPOINT, local_filename)
+    if not os.access(local_filename, os.R_OK):
+        smoka_obslog = "{}/{}".format(SMOKA_OBSLOG_ENDPOINT, local_filename)
         name_temp_file = NamedTemporaryFile()
         local_filename = str(name_temp_file.name)
         with open(local_filename, str('w')) as fobj:
+            logging.info("Connecting to: {}".format(smoka_obslog))
             resp = requests.get(smoka_obslog)
             resp.raise_for_status()
             fobj.write(resp.content)
@@ -94,13 +144,15 @@ def parse_meta_data_table(local_filename, instrument_name):
     """
     Use the astropy package to return a Table representation of a SMOKA observation record.
 
+    :param instrument_name: Name of the instrument to to get observing log for.
     :param local_filename: name of text file with SMOKA observations in a text file.
     :type local_filename: str
+    :type instrument_name: str
     :return: Observation Record
     :rtype: Table
     """
-    HEADER = os.path.join(DATADIR, "{}_Header.txt".format(instrument_name))
-    position_line = open(HEADER).readlines()[1].split(' ')
+    header = os.path.join(DATADIR, "{}_Header.txt".format(instrument_name))
+    position_line = open(header).readlines()[1].split(' ')
     col_ends = []
     col_starts = [0]
     for col in position_line:
@@ -111,12 +163,12 @@ def parse_meta_data_table(local_filename, instrument_name):
             col_starts[-1] += 1
     col_starts = col_starts[:-1]
 
-    colnames = open(local_filename).readline()[1:].split()
+    column_names = open(local_filename).readline()[1:].split()
     return ascii.read(local_filename,
                       format="fixed_width_no_header",
                       col_ends=col_ends,
                       col_starts=col_starts,
-                      names=colnames,
+                      names=column_names,
                       fill_values=('', '----', '---'))
 
 
@@ -135,7 +187,6 @@ def position_bounds(ra, dec, width=34 / 60.0, height=27 / 60.0):
     """
     points = []
     vertices = []
-
     # A polygon needs a set of points that define the corners and a set of vectors that define
     # the area inside those points that is the covered area.
     segment_type = SegmentType['MOVE']
@@ -143,6 +194,7 @@ def position_bounds(ra, dec, width=34 / 60.0, height=27 / 60.0):
         xx = ra + x * width
         yy = dec + y * height
         points.append(Point(xx, yy))
+        logging.debug("Added line segement: ({},{}) {}".format(xx, yy, segment_type))
         vertices.append(Vertex(xx, yy, segment_type))
         segment_type = SegmentType['LINE']
 
@@ -151,7 +203,9 @@ def position_bounds(ra, dec, width=34 / 60.0, height=27 / 60.0):
                            dec - 0.5 * height,
                            SegmentType['CLOSE']))
 
-    return Polygon(points=points, samples=shape.MultiPolygon(vertices))
+    this_polygon = Polygon(points=points, samples=shape.MultiPolygon(vertices))
+    logging.debug("Made polygon: {}".format(this_polygon))
+    return this_polygon
 
 
 def smoka_datarequest(frame_ids):
@@ -178,40 +232,83 @@ def build_energy(row, bandpass_database):
     """
     given a row of data from SMOKA build a CAOM2 Energy object.
 
+    :param bandpass_database: database that contains SVO filter bandpass information.
     :param row:  SMOKA text file Row
+    :type row: Table.Row
+    :type bandpass_database: svo.BandPassDatabase
     :return: CAOM2.Energy
     :rtype: Energy
     """
 
-    raw_filter_name = row['FILTER']
-
     # Build the energy object
+    filter_name = None
+    filter_names = []
+    max_wavelength = 11000 * units.AA
+    min_wavelength = 3000 * units.AA
+
+    for filter_number in range(1, 4):
+        raw_filter_name = row['FILTER0{}'.format(filter_number)]
+        if "NONE" in raw_filter_name:
+            continue
+
+        # The headers keywords have extra characters when compared to the SVO database.
+        group = re.match('^SCFCFL[BS]?(.*?)(01)?$', raw_filter_name)
+        if group is not None:
+            filter_name = group.groups()[0]
+        else:
+            # No matching filter bits.
+            continue
+        filter_names.append(filter_name)
+        filter_info = bandpass_database[filter_name]
+        if filter_info is None:
+            continue
+
+        # There can be multiple filters, they are cumulative.
+        max_wavelength = min(max_wavelength, filter_info['wavelength_max'])
+        min_wavelength = max(min_wavelength, filter_info['wavelength_min'])
+
+    cwl = (min_wavelength + max_wavelength) / 2.0
+    bandwidth = (max_wavelength - min_wavelength)
+    resolving_power = float(cwl / bandwidth)
+
+    disperse = row["DISPERSR"]
+    if disperse is not None:
+        grism_name = GRISM_NAMES.get(disperse, None)
+        if grism_name is not None:
+            grism = DISPERSERS.get(grism_name, None)
+            if grism is not None:
+                grism_params = None
+                for filter_name in filter_names:
+                    grism_params = grism.get(filter_name, None)
+                    if grism_params is not None:
+                        break
+                if grism_params is None:
+                    grism_params = grism.get("DEFAULT")
+                if grism_params is not None:
+                    min_wavelength = max(min_wavelength, grism_params[0] * units.AA)
+                    max_wavelength = min(max_wavelength, grism_params[1] * units.AA)
+                    resolving_power = grism_params[2]
+                    bandwidth = max_wavelength - min_wavelength
+
     energy = Energy()
     try:
-        filter_name = row['FILTER'].split('-')[-1]
-        if filter_name[-1] == "+":
-            filter_name = "SDSS_{}".format(filter_name[0])
-        if filter_name[0] == 'L':
-            filter_name = "NB{}".format(filter_name[1:])
-
-        filter_info = bandpass_database[filter_name]
-
-        cwl = (filter_info['wavelength_min'] + filter_info['wavelength_max']) / 2.0
-        bandwidth = (filter_info['wavelength_max'] - filter_info['wavelength_min'])
-        energy.bounds = Interval(filter_info['wavelength_min'].to('m').value,
-                                 filter_info['wavelength_max'].to('m').value,
-                                 samples=[shape.SubInterval(filter_info['wavelength_min'].to('m').value,
-                                                            filter_info['wavelength_max'].to('m').value)])
-        energy.resolving_power = float(cwl / bandwidth)
+        energy.bounds = Interval(min_wavelength.to('m').value,
+                                 max_wavelength.to('m').value,
+                                 samples=[shape.SubInterval(min_wavelength.to('m').value,
+                                                            max_wavelength.to('m').value)])
+        energy.resolving_power = float(resolving_power)
+        assert isinstance(bandwidth, Quality)
         energy.sample_size = bandwidth.to('m').value
-    except:
+    except Exception as ex:
+        logging.error(str(ex))
         pass
 
     energy.em_band = EnergyBand.OPTICAL
-    energy.bandpass_name = u'{}'.format(raw_filter_name)
+    energy.bandpass_name = u'{}'.format(filter_name)
     energy.dimension = 1
 
     return energy
+
 
 def data_product_type(obs_mod):
     """
@@ -221,8 +318,9 @@ def data_product_type(obs_mod):
     :return: the data product type
     :rtype: DataProductType
     """
-    data_type_map = dict(IMAG = DataProductType.IMAGE, SPEC = DataProductType.SPECTRUM, MOS = DataProductType.SPECTRUM)
+    data_type_map = dict(IMAG=DataProductType.IMAGE, SPEC=DataProductType.SPECTRUM, MOS=DataProductType.SPECTRUM)
     return data_type_map.get(obs_mod, None)
+
 
 def build_observation(smoka_meta_data_row, instrument_name='SUP'):
     """
@@ -252,11 +350,11 @@ def build_observation(smoka_meta_data_row, instrument_name='SUP'):
     else:
         intent = ObservationIntentType.CALIBRATION
 
-    # Use the FRAME_ID to compute the EXP_ID. The EXP_ID is the Observation.observation_id
-    observation_id = u'{}'.format(row['FRAME_ID'].replace("A", "E").replace("X", "0"))
+    # Use the FRAME_ID as the ObservationID with "A" swapped to an "E"
+    observation_id = u'{}'.format(row['FRAME_ID']).replace("A", "E")
     logging.info("Creating CAOM2 observation: {}".format(observation_id))
 
-    this_observation = SimpleObservation(collection="SMOKA",
+    this_observation = SimpleObservation(collection="SUBARU",
                                          observation_id=observation_id,
                                          algorithm=Algorithm(u'exposure'),
                                          sequence_number=None,
@@ -270,7 +368,7 @@ def build_observation(smoka_meta_data_row, instrument_name='SUP'):
                                          )
 
     # Create a plane that will hold the raw data
-    # The plane ID is mapped to the FRAME_ID, except that SMOKA.
+    # The plane ID is mapped to the FRAME_ID.
     this_plane = Plane(u"{}".format(row['FRAME_ID']),
                        meta_release=time.Time('2017-01-01 00:00:00').to_datetime())
     this_plane.calibration_level = CalibrationLevel.RAW_STANDARD
@@ -292,11 +390,11 @@ def build_observation(smoka_meta_data_row, instrument_name='SUP'):
                                end_time.mjd,
                                samples=[shape.SubInterval(start_time.mjd, end_time.mjd)])
         this_time = Time(bounds=time_bounds,
-                    dimension=1,
-                    resolution=exptime.to('second').value,
-                    sample_size=exptime.to('day').value,
-                    exposure=exptime.to('second').value
-                    )
+                         dimension=1,
+                         resolution=exptime.to('second').value,
+                         sample_size=exptime.to('day').value,
+                         exposure=exptime.to('second').value
+                         )
     except Exception as ex:
         logging.error("Error building Time for {}".format(observation_id))
         logging.error("{}".format(ex))
@@ -350,10 +448,10 @@ def caom2repo(this_observation):
     :param this_observation: the CAOM2 Python object to store to caom2repo service
     :return:
     """
+    repo_client.put_observation(this_observation)
 
     try:
         logging.info('Inserting observation {}'.format(this_observation.observation_id))
-        repo_client.put_observation(this_observation)
     except Exception as ex:
         logging.warning(str(ex))
         logging.info('Deleting observation {}'.format(this_observation.observation_id))
@@ -373,17 +471,17 @@ def main(instrument_name='SUP', year='2002'):
             logging.error("Failed to build repo record for row: {}".format(row))
             logging.error(str(ex))
 
+
 def augment_filter_lookup_table(instrument_name):
     bandpass_database = svo.BandpassFilterDatabase(telescope=TELESCOPE_NAME.get(instrument_name, 'Subaru'),
                                                    instrument=INSTRUMENT_NAMES.get(instrument_name, None)[0])
 
-
-    energy_bouds = dict(O58 = (580*units.nm, 1000*units.nm),
-                        Y47 = (470*units.nm, 910*units.nm),
-                        SDSS_z = (813.850*units.nm, 1026.852*units.nm),
-                        L600 = (370*units.nm, 600*units.nm),
-                        L550 = (340*units.nm, 525*units.nm),
-                        C50 = None,
+    energy_bouds = dict(O58=(580 * units.nm, 1000 * units.nm),
+                        Y47=(470 * units.nm, 910 * units.nm),
+                        SDSS_z=(813.850 * units.nm, 1026.852 * units.nm),
+                        L600=(370 * units.nm, 600 * units.nm),
+                        L550=(340 * units.nm, 525 * units.nm),
+                        C50=None,
                         )
     for key in energy_bouds:
         bandpass_database.add_static_filter(key, energy_bouds[key])
