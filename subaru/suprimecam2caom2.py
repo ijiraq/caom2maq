@@ -290,12 +290,15 @@ def build_observation(smoka_meta_data_row, instrument_name='SUP'):
     this_plane.energy = energy
 
     # create a reference to the data file stored at SMOKA.
-    this_plane.artifacts.add(Artifact(uri='smoka:file/{}'.format(this_plane.product_id),
+    obsdate = start_time.iso[0:10]
+    this_plane.artifacts.add(Artifact(uri='subaru:raw/{}/{}'.format(obsdate,
+                                                                     this_plane.product_id),
                                       product_type=ProductType.SCIENCE,
+                                      content_type='text/html',
                                       release_type=ReleaseType.DATA))
 
     # Add the PREVIEW artifact, stored in SMOKA
-    this_plane.artifacts.add(Artifact(uri='smoka:preview/{}'.format(this_plane.product_id),
+    this_plane.artifacts.add(Artifact(uri='subaru:preview/{}'.format(this_plane.product_id),
                                       product_type=ProductType.PREVIEW,
                                       release_type=ReleaseType.META,
                                       content_type='image/png'))
