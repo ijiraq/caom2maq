@@ -266,6 +266,8 @@ def build_energy(row, bandpass_database):
         # There can be multiple filters, they are cumulative.
         max_wavelength = min(max_wavelength, filter_info['wavelength_max'])
         min_wavelength = max(min_wavelength, filter_info['wavelength_min'])
+        logging.debug("{}: {} {}".format(filter_name, filter_info['wavelength_min'], filter_info['wavelength_max']))
+        logging.debug("min/max: {} {}".format(min_wavelength, max_wavelength))
 
     cwl = (min_wavelength + max_wavelength) / 2.0
     bandwidth = (max_wavelength - min_wavelength)
@@ -300,7 +302,7 @@ def build_energy(row, bandpass_database):
         assert isinstance(bandwidth, Quality)
         energy.sample_size = bandwidth.to('m').value
     except Exception as ex:
-        logging.error(str(ex))
+        logging.warning("Failed to build Energy for observation {}".format(ex))
         pass
 
     energy.em_band = EnergyBand.OPTICAL
@@ -338,10 +340,14 @@ def build_observation(smoka_meta_data_row, instrument_name='SUP'):
     this_telescope = Telescope(name=TELESCOPE_NAME.get(instrument_name, 'Subaru'))
     bandpass_database = svo.BandpassFilterDatabase(telescope=TELESCOPE_NAME.get(instrument_name, 'Subaru'),
                                                    instrument=INSTRUMENT_NAMES.get(instrument_name, None)[0])
-
+    augment_filter_lookup_table(bandpass_database)
     # First lets define the Observation that is this record.
     this_instrument = Instrument(name=INSTRUMENT_NAMES[instrument_name][1])
     this_instrument.keywords.add(str(row['OBS_MOD']))
+
+    disperse = GRISM_NAMES.get(row["DISPERSR"], None)
+    if disperse is not None:
+        this_instrument.keywords.add(str(disperse))
 
     obstype = u'{}'.format(row['DATA_TYP'].upper())
     target_name = u'{}'.format(row['OBJECT2']).upper()
@@ -373,6 +379,10 @@ def build_observation(smoka_meta_data_row, instrument_name='SUP'):
                        meta_release=time.Time('2017-01-01 00:00:00').to_datetime())
     this_plane.calibration_level = CalibrationLevel.RAW_STANDARD
     this_plane.data_product_type = data_product_type(row['OBS_MOD'])
+    logging.debug("Disperser: {}".format(disperse))
+    if disperse is None:
+        this_plane.data_product_type = data_product_type("IMAG")
+
     this_plane.provenance = Provenance(name='SMOKA',
                                        producer='SMOKA',
                                        project='SMOKA',
@@ -448,12 +458,11 @@ def caom2repo(this_observation):
     :param this_observation: the CAOM2 Python object to store to caom2repo service
     :return:
     """
-    repo_client.put_observation(this_observation)
 
     try:
         logging.info('Inserting observation {}'.format(this_observation.observation_id))
+        repo_client.put_observation(this_observation)
     except Exception as ex:
-        logging.warning(str(ex))
         logging.info('Deleting observation {}'.format(this_observation.observation_id))
         repo_client.delete_observation(this_observation.collection, this_observation.observation_id)
         logging.info('Inserting observation {}'.format(this_observation.observation_id))
@@ -472,16 +481,14 @@ def main(instrument_name='SUP', year='2002'):
             logging.error(str(ex))
 
 
-def augment_filter_lookup_table(instrument_name):
-    bandpass_database = svo.BandpassFilterDatabase(telescope=TELESCOPE_NAME.get(instrument_name, 'Subaru'),
-                                                   instrument=INSTRUMENT_NAMES.get(instrument_name, None)[0])
+def augment_filter_lookup_table(bandpass_database):
 
     energy_bouds = dict(O58=(580 * units.nm, 1000 * units.nm),
                         Y47=(470 * units.nm, 910 * units.nm),
                         SDSS_z=(813.850 * units.nm, 1026.852 * units.nm),
                         L600=(370 * units.nm, 600 * units.nm),
                         L550=(340 * units.nm, 525 * units.nm),
-                        C50=None,
+                        C50=(500*units.nm, 11000*units.nm),
                         )
     for key in energy_bouds:
         bandpass_database.add_static_filter(key, energy_bouds[key])
