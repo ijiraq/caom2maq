@@ -117,7 +117,6 @@ class BandpassFilterDatabase(dict):
         :type bounds: (Quantity, Quantity)
         :return: None
         """
-        self._filter_cache[k] = {'wavelength_min': bounds[0],
-                                 'wavelength_max': bounds[1],
-                                 'bandpasss_name': filter_name}
-
+        self._filter_cache[filter_name] = {'wavelength_min': bounds[0],
+                                           'wavelength_max': bounds[1],
+                                           'bandpasss_name': filter_name}
