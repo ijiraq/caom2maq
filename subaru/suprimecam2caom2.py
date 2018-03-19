@@ -12,6 +12,7 @@ import logging
 import os
 from tempfile import NamedTemporaryFile
 from caom2repo import CAOM2RepoClient
+import wcs2bounds
 
 DATADIR = __PATH__ = os.path.join(os.path.dirname(__file__), 'data')
 SUP_HEADER = os.path.join(DATADIR, "SUP_Header.txt")
@@ -97,6 +98,16 @@ def parse_meta_data_table(local_filename):
                       fill_values=('', '----', '---'))
 
 
+def compute_fov(ra, dec, width=5*2048, height=2*4096):
+    """
+
+    :param ra:
+    :param dec:
+    :return:
+    """
+
+
+
 def position_bounds(ra, dec, width=34 / 60.0, height=27 / 60.0):
     """
     Given the RA and DEC of a SuprimeCam image return a Polygon bounding box.
@@ -110,26 +121,15 @@ def position_bounds(ra, dec, width=34 / 60.0, height=27 / 60.0):
     :return: bounding box
     :rtype: CoordPolygon2D
     """
-    points = []
-    vertices = []
+    naxis1 = width / PIXEL_SCALE["SUP"].to('degree').value
+    naxis2 = height/ PIXEL_SCALE["SUP"].to('degree').value
+    wcs_header = dict(crval1=ra, crval2=dec, crpix1=naxis1 / 2.0, crpix2=naxis2 / 2.0,
+                      cd1_1=PIXEL_SCALE["SUP"].to('degree').value,
+                      cd2_2=PIXEL_SCALE["SUP"].to('degree').value,
+                      cd1_2=0, cd2_1=0, cunit1='deg', cunit2='deg', ctype1='RA---TAN',
+                      ctype2='DEC--TAN', naxis1=naxis1, naxis2=naxis2)
 
-    # A polygon needs a set of points that define the corners and a set of vectors that define
-    # the area inside those points that is the covered area.
-    segment_type = SegmentType['MOVE']
-    for x, y in ([-0.5, -0.5], [-0.5, 0.5], [0.5, 0.5], [0.5, -0.5]):
-        xx = ra + x * width
-        yy = dec + y * height
-        points.append(Point(xx, yy))
-        vertices.append(Vertex(xx, yy, segment_type))
-        segment_type = SegmentType['LINE']
-
-    # Close up the sample area
-    vertices.append(Vertex(ra - 0.5 * width,
-                           dec - 0.5 * height,
-                           SegmentType['CLOSE']))
-
-    return Polygon(points=points, samples=shape.MultiPolygon(vertices))
-
+    return wcs2bounds.wcs2bounds(wcs_header, axes=(naxis1, naxis2))
 
 def smoka_datarequest(frame_ids):
     """
@@ -292,7 +292,12 @@ def build_observation(smoka_meta_data_row, instrument_name='SUP'):
     position = None
     try:
         coord = SkyCoord(row['RA2000'], row['DEC2000'], unit=('hour', 'degree'))
-        position = Position(bounds=position_bounds(coord.ra.degree, coord.dec.degree),
+        if "X" in product_id:
+            width = 34 / 60.0
+        else:
+            width = 4 * 34 / (5 * 60.0)
+
+        position = Position(bounds=position_bounds(coord.ra.degree, coord.dec.degree, width=width),
                             sample_size=PIXEL_SCALE[instrument_name].to('arcsecond').value,
                             time_dependent=False)
     except Exception as ex:
