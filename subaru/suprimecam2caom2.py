@@ -1,5 +1,7 @@
 from __future__ import unicode_literals
 import argparse
+
+import cadcutils
 from astropy.coordinates import SkyCoord
 from cadcutils import net
 from caom2 import *
@@ -238,7 +240,7 @@ def build_observation(smoka_meta_data_row, instrument_name='SUP'):
 
     this_observation = SimpleObservation(collection=this_telescope.name,
                                          observation_id=observation_id,
-                                         algorithm=Algorithm(u'simple'),
+                                         algorithm=Algorithm(),
                                          sequence_number=None,
                                          intent=intent,
                                          type=obstype,
@@ -349,8 +351,8 @@ def caom2repo(this_observation, repo_client):
             repo_client.put_observation(this_observation)
         else:
             print(this_observation)
-    except Exception as ex:
-        logging.warning(str(ex))
+    except cadcutils.exceptions.AlreadyExistsException as ex:
+        logging.debug(type(ex))
         logging.info('Deleting observation {}'.format(this_observation.observation_id))
         repo_client.delete_observation(this_observation.collection, this_observation.observation_id)
         logging.info('Inserting observation {}'.format(this_observation.observation_id))
@@ -390,6 +392,14 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
+    log_level = logging.ERROR
+    if args.verbose:
+        log_level = logging.INFO
+    elif args.debug:
+        log_level = logging.DEBUG
+
+    logging.basicConfig(level=log_level)
+
     repo_client = None
     if not args.dry_run:
         try:
@@ -400,13 +410,5 @@ if __name__ == '__main__':
         except Exception as ex:
             logging.error("Failed to create a repo client:{}".format(ex))
 
-
-    log_level = logging.ERROR
-    if args.verbose:
-        log_level = logging.INFO
-    elif args.debug:
-        log_level = logging.DEBUG
-
-    logging.basicConfig(level=log_level)
 
     main(args.instrument, args.year, repo_client=repo_client, frame_id=args.frame_id)
