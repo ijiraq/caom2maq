@@ -1,8 +1,10 @@
 from __future__ import unicode_literals
 import argparse
 
+from cadcutils import exceptions as cadcutils_execptions
 import re
 from astropy.coordinates import SkyCoord
+from astropy.units import Quantity
 from cadcutils import net
 from caom2 import *
 from astropy import time
@@ -16,6 +18,7 @@ from tempfile import NamedTemporaryFile
 from caom2repo import CAOM2RepoClient
 
 DATADIR = __PATH__ = os.path.join(os.path.dirname(__file__), 'data')
+SUP_HEADER = os.path.join(DATADIR, "FCS_Header.txt")
 
 INSTRUMENT_NICK_NAMES = ('MIR', 'HSC', 'CIA', 'FCS', 'HDS', 'MCS', 'FMS', 'K3D',
                          'HIC', 'SUP', 'CAC', 'IRC', 'COM', 'OHS')
@@ -25,19 +28,18 @@ TELESCOPE_NAME = {"SUP": 'SUBARU',
 INSTRUMENT_NAMES = {"MIR": ("MOICS", "Multi-Object Infrared Camera and Spectrograph"),
                     'HSC': ("HSC", "Hyper Suprime-Cam"),
                     "CIA": ("CIAO", "Coronagraphic Imager"),
-                    "FCS": ("FOCAS", "Faint Object Camera And Spectrograph"),
+                    "FCS": ("FOCUS", "Faint Object Camera And Spectrograph"),
                     "HDS": ("HDS", "High Dispersion Spectrograph"),
                     "MCS": ("MOIRCS", "Multi-Object Infrared Camera and Spectrograph"),
                     "FMS": ("FMOS", "Fiber Multi Object Spectrograph"),
                     "K3D": ("Kyote3DII", "Kyoto tridimensional spectrograph II"),
                     "HIC": ("HiCIAO", "High Contrast Instrument for the Subaru Next Generation Adaptive Optics"),
-                    "SUP": ("Suprime", 'Subaru Prime Focus Camera'),
+                    "SUP": ("Suprime", 'Suprime-Cam'),
                     "CAC": "CAC",
                     "COM": "Cooled Mid-Infrared Camera and Spectrograph",
                     "IRC": "Infrared Camera and Spectrograph",
                     "OHS": "Cooled Infrared Spectrograph and Camera for OHS",
                     }
-
 DISPERSERS = {"75": {"SY47": (4700, 9100, 250),
                      "SO58": (5800, 10000, 250),
                      "DEFAULT": (3000, 11000, 250)},
@@ -71,18 +73,14 @@ DISPERSERS = {"75": {"SY47": (4700, 9100, 250),
               "VPH950": {"O58":	(8850, 10000, 5500),
                          "DEFAULT": (3000, 11000, 2500)}
               }
-
 _GRISM_NAMES = (
     ("SCFCGREL01", "SCFCGRLD01", "SCFCGRMB01", "SCFCGRMR01", "SCFCGRHDEC", "SCFCGRHD45", "SCFCGRHD52", "SCFCGRHD65",
      "SCFCGRHD68", "SCFCGRHD80", "SCFCGRHD95"),
     ("75", "150", "300B", "300R", "Echelle", "VPH450", "VPH520", "VPH650", "VPH680", "VPH800", "VPH950")
 )
-
 GRISM_NAMES = {}
 for idx in range(len(_GRISM_NAMES[0])):
     GRISM_NAMES[_GRISM_NAMES[0][idx]] = _GRISM_NAMES[1][idx]
-
-
 PIXEL_SCALE = {"SUP": 0.2 * units.arcsecond,
                "FCS": 0.1038 * units.arcsecond}
 FOV = dict(FCS=(6/60./2.0, 6/60./2.0),
@@ -107,11 +105,6 @@ FILTER_MAP = dict(SCFCFLBU01='U',
                   SCFCFLL550='L550',
                   SCFCFLLC50='C50'
                   )
-
-# Create a CAOM2RepoClient object.
-certificate = os.path.join(os.getenv('HOME'), '.ssl/cadcproxy.pem')
-resource_id = 'ivo://cadc.nrc.ca/sc2repo'
-repo_client = CAOM2RepoClient(net.Subject(certificate=certificate), resource_id=resource_id)
 
 
 def get_metadata_table(instrument_name="SUP", year=2002):
@@ -299,10 +292,10 @@ def build_energy(row, bandpass_database):
                                  samples=[shape.SubInterval(min_wavelength.to('m').value,
                                                             max_wavelength.to('m').value)])
         energy.resolving_power = float(resolving_power)
-        assert isinstance(bandwidth, Quality)
+        assert isinstance(bandwidth, Quantity)
         energy.sample_size = bandwidth.to('m').value
-    except Exception as ex:
-        logging.warning("Failed to build Energy for observation {}".format(ex))
+    except Exception as energy_exception:
+        logging.warning("Failed to build Energy for observation {}".format(energy_exception))
         pass
 
     energy.em_band = EnergyBand.OPTICAL
@@ -342,7 +335,7 @@ def build_observation(smoka_meta_data_row, instrument_name='SUP'):
                                                    instrument=INSTRUMENT_NAMES.get(instrument_name, None)[0])
     augment_filter_lookup_table(bandpass_database)
     # First lets define the Observation that is this record.
-    this_instrument = Instrument(name=INSTRUMENT_NAMES[instrument_name][1])
+    this_instrument = Instrument(name=INSTRUMENT_NAMES[instrument_name][0])
     this_instrument.keywords.add(str(row['OBS_MOD']))
 
     disperse = GRISM_NAMES.get(row["DISPERSR"], None)
@@ -361,9 +354,7 @@ def build_observation(smoka_meta_data_row, instrument_name='SUP'):
     logging.info("Creating CAOM2 observation: {}".format(observation_id))
 
     this_observation = SimpleObservation(collection="SUBARU",
-                                         observation_id=observation_id,
-                                         algorithm=Algorithm(u'exposure'),
-                                         sequence_number=None,
+                                         observation_id=observation_id, sequence_number=None,
                                          intent=intent,
                                          type=obstype,
                                          proposal=None,
@@ -376,7 +367,9 @@ def build_observation(smoka_meta_data_row, instrument_name='SUP'):
     # Create a plane that will hold the raw data
     # The plane ID is mapped to the FRAME_ID.
     this_plane = Plane(u"{}".format(row['FRAME_ID']),
-                       meta_release=time.Time('2017-01-01 00:00:00').to_datetime())
+                       meta_release=time.Time('2017-01-01 00:00:00').to_datetime(),
+                       data_release=time.Time('2017-01-01 00:00:00').to_datetime()
+                       )
     this_plane.calibration_level = CalibrationLevel.RAW_STANDARD
     this_plane.data_product_type = data_product_type(row['OBS_MOD'])
     logging.debug("Disperser: {}".format(disperse))
@@ -392,6 +385,7 @@ def build_observation(smoka_meta_data_row, instrument_name='SUP'):
 
     # Build the time object.
     this_time = None
+    start_time = None
     try:
         start_time = time.Time("{} {}".format(row['DATE_OBS'], row['UT_STR']))
         exptime = row['EXPTIME'] * units.second
@@ -405,9 +399,9 @@ def build_observation(smoka_meta_data_row, instrument_name='SUP'):
                          sample_size=exptime.to('day').value,
                          exposure=exptime.to('second').value
                          )
-    except Exception as ex:
+    except Exception as time_exception:
         logging.error("Error building Time for {}".format(observation_id))
-        logging.error("{}".format(ex))
+        logging.error("{}".format(time_exception))
 
     this_plane.time = this_time
 
@@ -419,24 +413,27 @@ def build_observation(smoka_meta_data_row, instrument_name='SUP'):
                                                    width=FOV[instrument_name][0], height=FOV[instrument_name][1]),
                             sample_size=PIXEL_SCALE[instrument_name].to('arcsecond').value,
                             time_dependent=False)
-    except Exception as ex:
+    except Exception as time_exception:
         logging.error("Error building Position for {}".format(observation_id))
-        logging.error("{}".format(ex))
+        logging.error("{}".format(time_exception))
 
     this_plane.position = position
 
-    energy = None
+    energy = build_energy(row, bandpass_database)
     try:
         energy = build_energy(row, bandpass_database)
-    except Exception as ex:
+    except Exception as time_exception:
         logging.error("Error building Energy for {}".format(observation_id))
-        logging.error("{}".format(ex))
+        logging.error("{}".format(time_exception))
 
     this_plane.energy = energy
 
     # create a reference to the data file stored at SMOKA.
-    this_plane.artifacts.add(Artifact(uri='smoka:file/{}'.format(this_plane.product_id),
+    obsdate = start_time.iso[0:10]
+    this_plane.artifacts.add(Artifact(uri='subaru:raw/{}/{}'.format(obsdate,
+                                                                    this_plane.product_id),
                                       product_type=ProductType.SCIENCE,
+                                      content_type='text/html',
                                       release_type=ReleaseType.DATA))
 
     # Add the PREVIEW artifact, stored in SMOKA
@@ -451,31 +448,41 @@ def build_observation(smoka_meta_data_row, instrument_name='SUP'):
     return this_observation
 
 
-def caom2repo(this_observation):
+def caom2repo(this_observation, repo_client):
     """
     Put an observation into the CAOM repo service
 
     :param this_observation: the CAOM2 Python object to store to caom2repo service
+    :param repo_client:  A CAOM@ Repo client instance that will PUT this_observation to a repository.
     :return:
     """
 
     try:
         logging.info('Inserting observation {}'.format(this_observation.observation_id))
-        repo_client.put_observation(this_observation)
-    except Exception as ex:
+        if repo_client is not None:
+            repo_client.put_observation(this_observation)
+        else:
+            print(this_observation)
+    except cadcutils_execptions.AlreadyExistsException as repo_execption:
+        logging.debug(type(repo_execption))
         logging.info('Deleting observation {}'.format(this_observation.observation_id))
         repo_client.delete_observation(this_observation.collection, this_observation.observation_id)
         logging.info('Inserting observation {}'.format(this_observation.observation_id))
         repo_client.put_observation(this_observation)
 
 
-def main(instrument_name='SUP', year='2002'):
+def main(instrument_name='SUP', year='2002', repo_client=None, frame_id=None):
     observation_table = get_metadata_table(instrument_name=instrument_name,
                                            year=year)
+    if frame_id is not None:
+        logging.debug("Only doing: {}".format(frame_id))
+        observation_table = observation_table[observation_table['FRAME_ID'] == frame_id]
+        logging.debug(str(observation_table))
 
     for row in observation_table:
+        build_observation(row, instrument_name=instrument_name)
         try:
-            caom2repo(build_observation(row, instrument_name=instrument_name))
+            caom2repo(build_observation(row, instrument_name=instrument_name), repo_client=repo_client)
         except Exception as ex:
             logging.error("Failed to build repo record for row: {}".format(row))
             logging.error(str(ex))
@@ -494,6 +501,23 @@ def augment_filter_lookup_table(bandpass_database):
         bandpass_database.add_static_filter(key, energy_bouds[key])
 
 
+def get_repo_client(certificate, resource_id):
+    """
+    Instantiate a caom2 repository client to put records to caom2 repository with.
+
+    :param certificate:
+    :param resource_id:
+    :return: a CAOM2RepoClient instance
+    :rtype: CAOM2RepoClient
+    """
+    try:
+        # Create a CAOM2RepoClient object.
+        return CAOM2RepoClient(net.Subject(certificate=certificate), resource_id=resource_id)
+    except Exception as repo_exception:
+        logging.error("Failed to create a repo client:{}".format(repo_exception))
+        return None
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Retrieves metadata table from SMOKA and creates CAOM2 entries")
     parser.add_argument('instrument', choices=INSTRUMENT_NAMES.keys(),
@@ -501,6 +525,13 @@ if __name__ == '__main__':
     parser.add_argument('year', choices=range(1998, 2018), type=int, help="Year of observation set to load.")
     parser.add_argument('--verbose', action='store_true')
     parser.add_argument('--debug', action='store_true')
+    parser.add_argument('--repo-resource-id', default='ivo://cadc.nrc.ca/sc2repo',
+                        help="The CAOM2REPO service to post records to")
+    parser.add_argument('--certfile', default=os.path.join(os.getenv('HOME'), '.ssl/cadcproxy.pem'),
+                        help="CADC X509 proxy certificat to use for authentication")
+    parser.add_argument('--dry-run', action="store_true", help="Do a Dry Run and print the caom2 record to stdout.")
+    parser.add_argument('--frame-id', help="Just do this frame ID from this year.", default=None)
+
     args = parser.parse_args()
 
     log_level = logging.ERROR
@@ -511,4 +542,9 @@ if __name__ == '__main__':
 
     logging.basicConfig(level=log_level)
 
-    main(args.instrument, args.year)
+    if not args.dry_run:
+        caom_repo_client = get_repo_client(args.certfile, args.repo_resource_id)
+    else:
+        caom_repo_client = None
+
+    main(args.instrument, args.year, repo_client=caom_repo_client, frame_id=args.frame_id)
