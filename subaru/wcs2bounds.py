@@ -1,7 +1,8 @@
-__author__ = 'jjk'
 from caom2 import shape, SegmentType, Point, Polygon, Vertex
 from astropy import wcs
 import logging
+__author__ = 'jjk'
+
 
 def wcs2bounds(wcs_header, axes):
     """

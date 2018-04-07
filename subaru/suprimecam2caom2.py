@@ -22,7 +22,8 @@ SUP_HEADER = os.path.join(DATADIR, "SUP_Header.txt")
 INSTRUMENT_NICK_NAMES = ('MIR', 'HSC', 'CIA', 'FCS', 'HDS', 'MCS', 'FMS', 'K3D',
                          'HIC', 'SUP', 'CAC', 'IRC', 'COM', 'OHS')
 SMOKA_OBSLOG_ENDPOINT = 'http://smoka.nao.ac.jp/status/obslog'
-TELESCOPE_NAME = {"SUP": 'SUBARU'}
+TELESCOPE_NAME = {"SUP": 'SUBARU',
+                  "FCS": 'SUBARU'}
 INSTRUMENT_NAMES = {"MIR": ("MOICS", "Multi-Object Infrared Camera and Spectrograph"),
                     'HSC': ("HSC", "Hyper Suprime-Cam"),
                     "CIA": ("CIAO", "Coronagraphic Imager"),
@@ -240,7 +241,6 @@ def build_observation(smoka_meta_data_row, instrument_name='SUP'):
 
     this_observation = SimpleObservation(collection=this_telescope.name,
                                          observation_id=observation_id,
-                                         algorithm=Algorithm(),
                                          sequence_number=None,
                                          intent=intent,
                                          type=obstype,
