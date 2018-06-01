@@ -11,10 +11,9 @@ import filters
 from astropy.coordinates import Angle
 
 VERSION_DATE = time.Time(os.stat(__file__).st_mtime, format='unix')
-
 DATADIR = __PATH__ = os.path.join(os.path.dirname(__file__), 'data')
-
 SMOKA_OBSLOG_ENDPOINT = 'http://smoka.nao.ac.jp/status/obslog'
+CAOM2Collection = "SUBARU"
 
 TELESCOPE_NAME = {"SUP": 'SUBARU',
                   "FCS": 'SUBARU',
@@ -29,20 +28,19 @@ PROVENANCE_URLS = {"SUP": 'https://www.subarutelescope.org/Observing/Instruments
                    'MCS': 'https://www.subarutelescope.org/Observing/Instruments/MOIRCS/index.html'
                    }
 
-INSTRUMENT_NAMES = {"MIR": ("MOIRCS", "Multi-Object Infrared Camera and Spectrograph"),
-                    'HSC': ("HSC", "Hyper Suprime-Cam"),
-                    "CIA": ("CIAO", "Coronagraphic Imager with Adaptive Optics"),
-                    "FCS": ("FOCAS", "Faint Object Camera And Spectrograph"),
-                    "HDS": ("HDS", "High Dispersion Spectrograph"),
-                    "FMS": ("FMOS", "Fiber Multi Object Spectrograph"),
-                    "K3D": ("Kyote3DII", "Kyoto tridimensional spectrograph II"),
-                    "HIC": ("HiCIAO", "High Contrast Instrument for the Subaru Next Generation Adaptive Optics"),
-                    "SUP": ("Suprime", 'Subaru Prime Focus Camera'),
-                    "CAC": "CAC",
-                    "COM": "Cooled Mid-Infrared Camera and Spectrograph",
-                    "IRC": "Infrared Camera and Spectrograph",
-                    "OHS": "Cooled Infrared Spectrograph and Camera for OHS",
-                    "MCS": ("MOIRCS", "Multi-Object InfraRed Camera and Spectrograph")
+# Map SMOKA instrument identifiers to instrument short names.
+INSTRUMENT_NAMES = {"MIR": "MOIRCS",
+                    'HSC': "HSC",
+                    "CIA": "CIAO",
+                    "FCS": "FOCAS",
+                    "HDS": "HDS",
+                    "FMS": "FMOS",
+                    "K3D": "Kyote3DII",
+                    "HIC": "HiCIAO",
+                    "SUP": "Suprime-Cam",
+                    "COM": "COMICS",
+                    "IRC": "IRCS",
+                    "MCS": "MOIRCS",
                     }
 
 INSTRUMENT_NICK_NAMES = INSTRUMENT_NAMES.keys()
@@ -53,27 +51,36 @@ PIXEL_SCALE = {"SUP": 0.2 * units.arcsecond,
                "HSC": 0.17 * units.arcsecond,
                "MCS": 0.116 * units.arcsecond}
 
+SPECTRAL_RESPONSE = {"FCS": { "min_wavelength": 400 *units.nm, "max_wavelength": 1100*units.nm},
+                     "DEFAULT":{ "min_wavelength": 300 *units.nm, "max_wavelength": 5000*units.nm},
+                     "HSC": {"min_wavelength": 300 * units.nm, "max_wavelength": 1050 * units.nm},
+                     "CIA": {"min_wavelength": 900 * units.nm, "max_wavelength": 5500 * units.nm},
+                     "SUP": { "min_wavelength": 300 *units.nm, "max_wavelength": 1050*units.nm}}
+
 
 class SMOKA(object):
     """
     A SMOKA data table based CAOM2 SimpleObservation
     """
 
-    def __init__(self, row):
+    def __init__(self, row, previous_observation=None):
         """
 
         :param row: A row from the SMOKA obsLog
+        :param previous_observation: a previous record, which we might be adding to.
         :type row: Row
         """
         self.row = row
         self.bandpass_database = svo.BandpassFilterDatabase(
             telescope=TELESCOPE_NAME.get(self.instrument_name, 'SUBARU'),
-            instrument=INSTRUMENT_NAMES.get(self.instrument_name, None)[0])
+            instrument=self.instrument_name)
         filters.augment_filter_lookup_table(self.bandpass_database)
+        # the previous record, which we might be adding to.
+        self.previous_observation = previous_observation
 
     @property
     def collection(self):
-        return "SUBARU"
+        return CAOM2Collection
 
     @property
     def instrument_name(self):
@@ -81,21 +88,35 @@ class SMOKA(object):
 
     @property
     def product_id(self):
-        product_id = u"{}".format(self.row['FRAME_ID'])
-        return product_id
+        return self._exposure_id.replace(self.instrument_name + "E", self.instrument_name + "A")
+
+    @property
+    def _exposure_id(self):
+        """
+        determine the SMOKA exposure_id from the frame_id
+        :return:
+        """
+        exposure_id = self.row['FRAME_ID']
+        if self.instrument_name in ["MSC", "FCS"]:
+            # MCS and FCS are TWO CCD devices. The odd numbered FRAME_ID is the EXPOSURE_ID
+            dig = re.search('(\D+)([0-9]+)', exposure_id).groups()
+            base = dig[0]
+            dig = dig[1]
+            chip = int(dig)
+            if not chip % 2 > 0 and self.instrument_name in ['MCS', 'FCS']:
+                exposure_id = base+str(chip-1).zfill(len(dig))
+        if self.instrument_name in ["SUP", "CIA", "MCS", "FCS"]:
+            # For these instruments the 'A' in the frAme_id becomes an 'E' for the Exposure_id
+            exposure_id = exposure_id.replace(self.instrument_name + "A",
+                                              self.instrument_name + "E")
+        return exposure_id
 
     @property
     def observation_id(self):
-        observation_id = u"{}".format(self.row['FRAME_ID'])
-        observation_id = observation_id.replace("X", "0")
-        observation_id = observation_id.replace("Y", "1")
-        if self.instrument_name in ["SUP", "CIA", "MCS", "FCS"]:
-            observation_id = observation_id.replace(self.instrument_name + "A",
-                                                    self.instrument_name + "E")
-        return observation_id
+        return self._exposure_id.replace("XX", "00").replace("X", "0").replace("Y", "1")
 
     @property
-    def obstype(self):
+    def type(self):
         return u"{}".format(self.row['DATA_TYP'].upper())
 
     @property
@@ -104,7 +125,9 @@ class SMOKA(object):
 
     @property
     def intent(self):
-        if self.obstype == u'OBJECT':
+        if self.type == u'OBJECT':
+            if self.target_name in ['FLAT', 'BIAS', 'ZERO', 'COMPARISON', "DARK", 'FRINGE']:
+                return ObservationIntentType.CALIBRATION
             return ObservationIntentType.SCIENCE
         return ObservationIntentType.CALIBRATION
 
@@ -123,7 +146,8 @@ class SMOKA(object):
 
         key = self.instrument_name
         if key == "SUP":
-            "{}{}".format(key, self.product_id[-1])
+            key = "{}{}".format(key, self.product_id[-1])
+        logging.debug("FOV KEY: {}".format(key))
         return fov.get(key, (0.1, 0.1))
 
     @property
@@ -169,6 +193,10 @@ class SMOKA(object):
 
     @property
     def position(self):
+        """
+        create and return the caom2.Position object for this observation
+        :return:
+        """
         return Position(bounds=self.position_bounds,
                         sample_size=PIXEL_SCALE[self.instrument_name].to('arcsecond').value,
                         time_dependent=False)
@@ -181,39 +209,45 @@ class SMOKA(object):
             key = "FILTER{}".format(filter_no)
             if key in self.row.colnames:
                 filter_name = self.row[key]
-                logging.info("Attempting to disentangle filter name: {}".format(filter_name))
+                logging.debug("Attempting to disentangle filter name: {}".format(filter_name))
                 if "NONE" in filter_name or "open" in filter_name:
                     continue
                 filter_name = filter_name.split('-')[-1]
-                logging.info("After splitting: {}".format(filter_name))
+                logging.debug("After splitting: {}".format(filter_name))
                 if len(filter_name) > 0:
                     if filter_name[-1] == "+":
                         filter_name = "SDSS_{}".format(filter_name[0])
                     if filter_name[0] == 'L':
                         filter_name = "NB{}".format(filter_name[1:])
-                    logging.info("After mapping to SVO style: {}".format(filter_name))
+                    logging.debug("After mapping to SVO style: {}".format(filter_name))
 
                 # The headers keywords have extra characters when compared to the SVO database.
                 group = re.match('^SCFCFL[BS]?(.*?)(01)?$', filter_name)
                 if group is not None:
+                    logging.debug("Group Matching: {}".format(filter_name))
                     filter_name = group.groups()[0]
-                else:
-                    # No matching filter bits.
-                    continue
+                logging.debug("adding name to list: {}".format(filter_name))
                 _filters.append(filter_name)
-                logging.info("adding name to list: {}".format(filter_name))
         return _filters
 
     @property
     def disperser(self):
         if "DISPERSR" not in self.row.colnames:
             return None
+        if self.row['DISPERSR'] not in filters.GRISM_NAMES:
+            return None
         return self.row['DISPERSR']
 
     @property
     def grism(self):
         grism_name = filters.GRISM_NAMES.get(self.disperser, None)
-        return filters.DISPERSERS.get(grism_name, None)
+        if grism_name is None:
+            logging.warning("Unkown Grism Name: {}".format(self.disperser))
+            return None
+        if grism_name not in filters.DISPERSERS:
+            logging.warning("No filter details for grism: {}".format(grism_name))
+            return None
+        return filters.DISPERSERS[grism_name]
 
     @property
     def energy(self):
@@ -223,10 +257,11 @@ class SMOKA(object):
         energy.dimension = 1
 
         # Build the energy object
-        max_wavelength = 5.0 * units.um
-        min_wavelength = 0.3 * units.um
+        max_wavelength = SPECTRAL_RESPONSE.get(self.instrument_name, SPECTRAL_RESPONSE["DEFAULT"])["max_wavelength"]
+        min_wavelength = SPECTRAL_RESPONSE.get(self.instrument_name, SPECTRAL_RESPONSE["DEFAULT"])["min_wavelength"]
 
         for filter_name in self.filters:
+            logging.debug("Looking up filter information for : {}".format(filter_name))
             filter_info = self.bandpass_database[filter_name]
             if filter_info is None:
                 continue
@@ -245,11 +280,15 @@ class SMOKA(object):
             for filter_name in self.filters:
                 if filter_name in self.grism.keys():
                     grism_params = self.grism.get(filter_name)
+            logging.debug("Grism: {}, Params: {}".format(self.grism, grism_params))
             min_wavelength = max(min_wavelength, grism_params[0] * units.AA)
             max_wavelength = min(max_wavelength, grism_params[1] * units.AA)
+            logging.debug("min/max: {} {}".format(min_wavelength, max_wavelength))
             resolving_power = grism_params[2]
             bandwidth = max_wavelength - min_wavelength
 
+        min_wavelength = min(min_wavelength, max_wavelength)
+        max_wavelength = max(min_wavelength, max_wavelength)
         energy.bounds = Interval(min_wavelength.to('m').value,
                                  max_wavelength.to('m').value,
                                  samples=[shape.SubInterval(min_wavelength.to('m').value,
@@ -262,7 +301,7 @@ class SMOKA(object):
     @property
     def obs_mod(self):
         obs_mod = self.row['OBS_MOD']
-        if self.disperser is None and obs_mod == 'SPEC':
+        if (self.disperser is None or self.disperser == 'null') and obs_mod == 'SPEC':
             obs_mod = 'IMAG'
         return obs_mod
 
@@ -275,8 +314,10 @@ class SMOKA(object):
         :rtype: DataProductType
         """
         data_type_map = dict(IMAG=DataProductType.IMAGE,
+                             IMAG_VGW=DataProductType.IMAGE,
                              SPEC=DataProductType.SPECTRUM,
                              IMAG_SINGLE=DataProductType.IMAGE,
+                             COMPARISON=DataProductType.SPECTRUM,
                              MOS=DataProductType.SPECTRUM)
         return data_type_map.get(self.obs_mod, None)
 
@@ -292,9 +333,10 @@ class SMOKA(object):
     @property
     def instrument(self):
         # First lets define the Observation that is this record.
-        this_instrument = Instrument(name=INSTRUMENT_NAMES[self.instrument_name][0])
+        this_instrument = Instrument(name=INSTRUMENT_NAMES.get(self.instrument_name, self.instrument_name))
         this_instrument.keywords.add(str(self.row['OBS_MOD']))
-        this_instrument.keywords.add(str(self.disperser))
+        if self.disperser is not None:
+            this_instrument.keywords.add(str(self.disperser))
         return this_instrument
 
     @property
@@ -341,28 +383,49 @@ class SMOKA(object):
                     exposure=self.exptime.to('second').value
                     )
 
+    @property
+    def obsdate(self):
+        """
+        Get the observation date in a format that CAOM2 wants.
+        :return: obsdate
+        """
+        return self.start_time.iso[0:10]
+
+    @property
+    def science_artifact_uri(self):
+        return 'subaru:raw/{}/{}'.format(self.obsdate,
+                                         self.row['FRAME_ID'].replace("Y", "X"))
+
+    @property
+    def preview_artifact_uri(self):
+        preview_id = self.product_id.replace("XX", "00").replace("X", "1").replace("Y", "1")
+        return 'subaru:preview/{}/{}'.format(self.obsdate,
+                                             preview_id)
+
     def __call__(self):
 
         logging.info("Creating CAOM2 observation: {}".format(self.observation_id))
 
-        this_observation = SimpleObservation(collection=self.telescope.name,
-                                             observation_id=self.observation_id,
-                                             sequence_number=None,
-                                             intent=self.intent,
-                                             type=self.obstype,
-                                             proposal=None,
-                                             telescope=self.telescope,
-                                             instrument=self.instrument,
-                                             target=self.target,
-                                             meta_release=self.meta_release
-                                             )
+        if isinstance(self.previous_observation, Observation):
+            this_observation = self.previous_observation
+        else:
+            this_observation = SimpleObservation(collection=self.collection,
+                                                 observation_id=self.observation_id)
+        this_observation.meta_release = self.meta_release
+        this_observation.target = self.target
+        this_observation.instrument = self.instrument
+        this_observation.telescope = self.telescope
+        this_observation.sequence_number = None
+        this_observation.intent = self.intent
+        this_observation.type = self.type
+        this_observation.proposal = None
 
-        # Create a plane that will hold the raw data
-        this_plane = Plane(self.product_id,
-                           meta_release=self.meta_release,
-                           data_release=self.data_release,
-                           )
-
+        # Get or create as needed the plane that will hold the raw data
+        if self.product_id not in this_observation.planes:
+            this_observation.planes.add(Plane(self.product_id))
+        this_plane = this_observation.planes.get(self.product_id)
+        this_plane.meta_release = self.meta_release
+        this_plane.data_release = self.data_release
         this_plane.calibration_level = CalibrationLevel.RAW_STANDARD
         this_plane.data_product_type = self.data_product_type
         this_plane.provenance = self.providence
@@ -372,22 +435,27 @@ class SMOKA(object):
         this_plane.energy = self.energy
 
         # create a reference to the data file stored at SMOKA.
-        obsdate = self.start_time.iso[0:10]
-        this_plane.artifacts.add(Artifact(uri='subaru:raw/{}/{}'.format(obsdate,
-                                                                        this_plane.product_id),
-                                          product_type=ProductType.SCIENCE,
-                                          content_type='text/html',
-                                          release_type=ReleaseType.DATA))
+        # Get or create as needed the artifact that will hold the raw data
+        if self.science_artifact_uri not in this_plane.artifacts:
+            this_plane.artifacts.add(Artifact(self.science_artifact_uri,
+                                              ProductType.SCIENCE, ReleaseType.DATA,
+                                              content_type='text/html'))
+        else:
+            science_artifact = this_plane.artifacts.get(self.science_artifact_uri)
+            science_artifact.product_type = ProductType.SCIENCE
+            science_artifact.release_type = ReleaseType.DATA
+            science_artifact.content_type = 'text/html'
 
-        # Add the PREVIEW artifact, stored in SMOKA, These are referenced using the FrameID value of one of the members.
-        # but the frameID has an 'X' or 'Y' at end for SUP, so we need to adjust here.
-        this_plane.artifacts.add(Artifact(uri='subaru:preview/{}/{}'.format(obsdate,
-            this_plane.product_id.replace("X", "1").replace("Y", "1")),
-            product_type=ProductType.PREVIEW,
-            release_type=ReleaseType.META,
-            content_type='image/png'))
-
-        # And the plane to the observation.
-        this_observation.planes.add(this_plane)
+        # Modify/Create as needed the PREVIEW artifact
+        if self.preview_artifact_uri not in this_plane.artifacts:
+            this_plane.artifacts.add(Artifact(uri=self.preview_artifact_uri,
+                                              product_type=ProductType.PREVIEW,
+                                              release_type=ReleaseType.META,
+                                              content_type='image/png'))
+        else:
+            preview_artifact = this_plane.artifacts.get(self.preview_artifact_uri)
+            preview_artifact.product_type = ProductType.PREVIEW
+            preview_artifact.release_type = ReleaseType.META
+            preview_artifact.content_type = 'image/png'
 
         return this_observation
