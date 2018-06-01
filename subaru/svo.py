@@ -11,6 +11,15 @@ import requests
 
 DATADIR = __PATH__ = os.path.join(os.path.dirname(__file__), 'data')
 
+# Map SMOKA instrument names to SVO instrument names
+INSTRUMENT_NAME = dict(HSC="HSC",
+                       SUP="Suprime",
+                       FCS="FOCAS",
+                       CIA="CIAO",
+                       MCS="MOIRCS",
+                       IRC="IRCS"
+                       )
+
 class BandpassFilterDatabase(dict):
     """
     A database of filter information.
@@ -32,13 +41,17 @@ class BandpassFilterDatabase(dict):
         super(BandpassFilterDatabase, self).__init__(*args, **kwargs)
 
     @property
+    def instrument_name(self):
+        return INSTRUMENT_NAME[self.instrument]
+
+    @property
     def cache_filename(self):
         """
         Name of the filter cache file.
         :return:
         """
         if self._cache_filename is None:
-            self._cache_filename = "filter_cache_{}_{}.pkl".format(self.telescope, self.instrument)
+            self._cache_filename = "filter_cache_{}_{}.pkl".format(self.telescope, self.instrument_name)
             self._cache_filename = os.path.join(DATADIR, self._cache_filename)
         return self._cache_filename
 
@@ -86,11 +99,25 @@ class BandpassFilterDatabase(dict):
             v = self.look_up_filter(k)
             self._filter_cache[k] = v
             self.update_filter_cache()
+        logging.debug("Returning Filter information: {}:{}".format(k, self._filter_cache[k]))
         return self._filter_cache[k]
 
     def look_up_filter(self, filter_name):
+        """
+        Look up the transmission values from the SVO Theory page.
+        :param filter_name: name of filter (will get mangled to match SVO syntax
+        :return: minimum, maximum wavelengths and the bandpass name used at SVO.
+        :rtype: dict
+        """
 
-        params = {'ID': "{}/{}.{}".format(self.telescope, self.instrument, filter_name)}
+        if self.instrument == "HSC":
+            # SVO took out the '0' padding of the HSC NB filter wavelength
+            # and is appending _filter to names to indicate that they have not accounted for the full transmission.
+            filter_name = filter_name.replace("NB0", "NB")+"_filter"
+
+        params = {'ID': "{}/{}.{}".format(self.telescope, self.instrument_name, filter_name)}
+
+
 
         try:
             votable_file = StringIO(requests.get(BandpassFilterDatabase.FILTER_SERVICE_URL,
