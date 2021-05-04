@@ -17,7 +17,8 @@ INSTRUMENT_NAME = dict(HSC="HSC",
                        FCS="FOCAS",
                        CIA="CIAO",
                        MCS="MOIRCS",
-                       IRC="IRCS"
+                       IRC="IRCS",
+MICHELLE="Michelle"
                        )
 
 class BandpassFilterDatabase(dict):

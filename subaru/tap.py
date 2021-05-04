@@ -38,7 +38,7 @@ def tap_query(collection, observation_id, product_id=None, artifact_uri=None):
 
     result = requests.get(tap_url, params=tap_params)
     result.raise_for_status()
-    temporary_file = cStringIO.StringIO(result.content)
+    temporary_file = cStringIO.StringIO(result.text)
     temporary_file.seek(0)
     result_table = votable.parse_single_table(temporary_file).to_table()
     if len(result_table) > 0:
